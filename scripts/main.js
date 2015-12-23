@@ -1,5 +1,6 @@
 var React = require('react');
 var ReactDOM = require('react-dom');
+var CSSTransitionGroup = require('react-addons-css-transition-group');
 
 var ReactRouter = require('react-router');
 var Router = ReactRouter.Router;
@@ -12,10 +13,17 @@ var createBrowserHistory = require('history/lib/createBrowserHistory');
 
 var h = require('./helpers'); //.js not necessary with commonJS
 
+//firebase
+var Rebase = require('re-base');
+var base = Rebase.createClass('https://react-catch-of-day.firebaseio.com/');
+
+var Catalyst = require('react-catalyst');
 /*
 	StorePicker
 */
 var App = React.createClass({
+	mixins: [Catalyst.LinkedStateMixin], //passed down to inventory
+
 	//runs automatically
 	getInitialState: function() {
 		return {
@@ -23,37 +31,80 @@ var App = React.createClass({
 			order: {}
 		}
 	},
+
+	componentDidMount: function() {
+		base.syncState(this.props.params.storeId + '/fishes', {
+			context: this,
+			state: 'fishes'
+		});
+
+		var localStorageRef = localStorage.getItem('order-' + this.props.params.storeId);
+
+		if(localStorageRef) {
+			//update our component state to reflect whats in local storage
+			this.setState({
+				order: JSON.parse(localStorageRef)
+			});
+		}
+	},
+
+	componentWillUpdate(nextProps,nextState) {
+		localStorage.setItem('order-' + this.props.params.storeId, JSON.stringify(nextState.order));
+	},
+	addToOrder : function(key) {
+		this.state.order[key] = this.state.order[key] + 1 || 1;
+		this.setState({order: this.state.order});
+	},
+	removeFromOrder : function(key) {
+		delete this.state.order[key];
+		this.setState({order: this.state.order});
+	},
 	addFish: function(fish) {
 		var timestamp = (new Date()).getTime();
+		//update state object
 		this.state.fishes['fish-'+timestamp] =fish;
-		//set state
+		//set the state
 		this.setState({fishes: this.state.fishes });
+	},
+	removeFish: function(key) {
+		if(confirm('are you sure you want to remove this fish?')) {
+			this.state.fishes[key] = null;
+			//set state
+			this.setState({fishes: this.state.fishes });
+		}
 	},
 	loadSamples: function(){
 		this.setState({fishes: require('./sample-fishes')});
 	},
 	renderFish: function(key) {
-		return <Fish key={key} index={key} details={this.state.fishes[key]} />
+		return <Fish key={key} index={key} details={this.state.fishes[key]} addToOrder={this.addToOrder}/>
 	},
 	render: function(){
 		return(
 			<div className="catch-of-the-day">
 				<div className="menu">
 					<Header tagline="Fresh Seafood Good"/>
-					<ul className="list-of-fishies">
+					<ul className="list-of-fishes">
 						{Object.keys(this.state.fishes).map(this.renderFish)}
 					</ul>
 				</div>
-				<Order />
-				<Inventory addFish={this.addFish} loadSamples={this.loadSamples}/>
+				<Order fishes={this.state.fishes} order={this.state.order} removeFromOrder={this.removeFromOrder}/>
+				<Inventory addFish={this.addFish} fishes={this.state.fishes} removeFish={this.removeFish} loadSamples={this.loadSamples} fishes={this.state.fishes} linkState={this.linkState}/>
 			</div>
 		)
 	}
 });
 
 var Fish = React.createClass({
+	onButtonClick : function () {
+		var key = this.props.index;
+		this.props.addToOrder(key);
+	},
 	render: function(){
 		var details = this.props.details;
+		var isAvailable = (details.status === 'available' ? true : false);
+		var buttonText = (isAvailable ? 'Add To Order' : 'Sold Out!');
+
 		return (
 			<li className="menu-fish">
 				<img src={details.image} alt={details.name} />
@@ -62,6 +113,7 @@ var Fish = React.createClass({
 					<span className="price">{h.formatPrice(details.price)}</span>
 				</h3>
 				<p>{details.desc}</p>
+				<button disabled={!isAvailable} onClick={this.onButtonClick}>{buttonText}</button>
 			</li>
 		)
 	}
@@ -118,22 +170,86 @@ var Header = React.createClass({
 				<h3 className="tagline"><span>{this.props.tagline}</span></h3>
 			</header>
 		)
+	},
+	propTypes: {
+		tagline: React.PropTypes.string.isRequired
 	}
 });
+
 var Order = React.createClass({
+	renderOrder : function(key) {
+			var fish = this.props.fishes[key];
+			var count = this.props.order[key];
+			var removeButton = <button onClick={this.props.removeFromOrder.bind(null,key)}>&times;</button>
+
+			if(!fish) {
+				return <li key={key}>Sorry no longer available {removeButton}</li>
+			}
+		return (
+			<li key={key}>
+				<CSSTransitionGroup component="span" transitionName="count" transitionEnterTimeout={400} transitionLeaveTimeout={400} className="count">
+				</CSSTransitionGroup>
+					<span key={count}>{count} lbs</span>
+					{fish.name}
+					<span className="price">{h.formatPrice(count * fish.price)}</span>
+			</li>
+		)
+	},
 	render: function() {
+		var orderIds = Object.keys(this.props.order);
+
+		var total = orderIds.reduce((prevTotal, key)=> {
+			var fish = this.props.fishes[key];
+			var count = this.props.order[key];
+			var isAvailable = fish && fish.status === 'available';
+
+			if(fish && isAvailable) {
+				return prevTotal + (count * parseInt(fish.price) || 0);
+			}
+			return prevTotal;
+		}, 0);
+
 		return(
-			<p>Order</p>
+			<div className="order-wrap">
+			<h2 className="order-title">Order</h2>
+			<CSSTransitionGroup className="order" component="ul" transitionName="order" transitionEnterTimeout={500} transitionLeaveTimeout={500}>
+				{orderIds.map(this.renderOrder)}
+				<li className="total">
+					<strong>Total:</strong>
+					{h.formatPrice(total)}
+				</li>
+			</CSSTransitionGroup>
+			</div>
 		)
 	}
 });
+
 var Inventory = React.createClass({
+	renderInventory: function(key) {
+		var linkState = this.props.linkState;
+		return(
+			<div className="fish-edit" key={key}>
+				<input type="text" valueLink={linkState('fishes.'+ key +'.name')} />
+				<input type="text" valueLink={linkState('fishes.'+ key +'.price')} />
+				<select valueLink={linkState('fishes.'+ key +'.status')} >
+					<option value="unavailable">Sold Out!</option>
+					<option value="available">Fresh!</option>
+				</select>
+				<textarea valueLink={linkState('fishes.'+ key +'.desc')}></textarea>
+				<input type="text" valueLink={linkState('fishes.'+ key +'.image')} />
+				<button onClick={this.props.removeFish.bind(null, key)}>Remove Fish</button>
+			</div>
+		)
+	},
 	render: function() {
 		return(
 			<div>
-			<h2>Inventory</h2>
-			<AddFishForm {...this.props} />
-			<button onClick={this.props.loadSamples}>Load fishies</button>
+				<h2>Inventory</h2>
+
+				{Object.keys(this.props.fishes).map(this.renderInventory)}
+
+				<AddFishForm {...this.props} />
+				<button onClick={this.props.loadSamples}>Load fishes</button>
 			</div>
 		)
 	}
